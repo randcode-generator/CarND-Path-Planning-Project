@@ -8,6 +8,8 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
+#include "StateMachine.h"
 
 using namespace std;
 
@@ -200,7 +202,12 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+	int lane = 1;
+	double interval = 0.005;
+
+	StateMachine sm;
+
+  h.onMessage([&sm, &lane, &interval, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -218,40 +225,187 @@ int main() {
         
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          
+
         	// Main car's localization Data
-          	double car_x = j[1]["x"];
-          	double car_y = j[1]["y"];
-          	double car_s = j[1]["s"];
-          	double car_d = j[1]["d"];
-          	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+					double car_x = j[1]["x"];
+					double car_y = j[1]["y"];
+					double car_s = j[1]["s"];
+					double car_d = j[1]["d"];
+					double car_yaw = j[1]["yaw"];
+					double car_speed = j[1]["speed"];
 
-          	// Previous path data given to the Planner
-          	auto previous_path_x = j[1]["previous_path_x"];
-          	auto previous_path_y = j[1]["previous_path_y"];
-          	// Previous path's end s and d values 
-          	double end_path_s = j[1]["end_path_s"];
-          	double end_path_d = j[1]["end_path_d"];
+					// Previous path data given to the Planner
+					auto previous_path_x = j[1]["previous_path_x"];
+					auto previous_path_y = j[1]["previous_path_y"];
+					// Previous path's end s and d values 
+					double end_path_s = j[1]["end_path_s"];
+					double end_path_d = j[1]["end_path_d"];
 
-          	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-          	auto sensor_fusion = j[1]["sensor_fusion"];
+					// Sensor Fusion Data, a list of all other cars on the same side of the road.
+					auto sensor_fusion = j[1]["sensor_fusion"];
 
-          	json msgJson;
+					json msgJson;
+					int prev_size = previous_path_x.size();
 
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
+					sm.setCarInfo(lane, car_x, car_y, car_s, car_d);
 
+					// If tooClose is true, this counter increments
+					int tooCloseCount = 0;
+					// If the car is too close to the car in front, sets to true
+					bool tooClose = false;
+					// If the car is dangerous close to the car in front, emergency brake
+					bool emergencyBrakes = false;
+					// Is left lane changable
+					bool laneChangable_left = false;
+					// Is right lane changable
+					bool laneChangable_right = false;
+					
+					std::tie(tooCloseCount, tooClose, emergencyBrakes, laneChangable_left, laneChangable_right) = sm.process_sensors(sensor_fusion.begin(), sensor_fusion.end());
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-          	msgJson["next_x"] = next_x_vals;
-          	msgJson["next_y"] = next_y_vals;
+					// If there's a car in front that's slow and speed is less then 31mph get car to change lanes
+					if(tooCloseCount > 100 && car_speed <= 31) {
+						// Change lane to left lane
+						if(laneChangable_left==true) {
+							lane--;
+							sm.setCurrentLane(lane);
+							cout<<"count reset left_lane"<<endl;
+						}
+						// Otherwise change to right lane
+						else if(laneChangable_right==true) {
+							lane++;
+							sm.setCurrentLane(lane);
+							cout<<"count reset right_lane"<<endl;
+						}
+					}
 
-          	auto msg = "42[\"control\","+ msgJson.dump()+"]";
+					vector<double> ptsx;
+					vector<double> ptsy;
 
-          	//this_thread::sleep_for(chrono::milliseconds(1000));
-          	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          
+					double ref_x = car_x;
+					double ref_y = car_y;
+					double ref_yaw = deg2rad(car_yaw);
+					
+					// Push current and previous value
+					if(prev_size < 2) {
+						double prev_car_x = car_x - cos(car_yaw);
+						double prev_car_y = car_y - sin(car_yaw);
+
+						ptsx.push_back(prev_car_x);
+						ptsx.push_back(car_x);
+
+						ptsy.push_back(prev_car_y);
+						ptsy.push_back(car_y);
+					} else {
+						ref_x = previous_path_x[prev_size-1];
+						ref_y = previous_path_y[prev_size-1];
+						
+						double ref_x_prev = previous_path_x[prev_size-2];
+						double ref_y_prev = previous_path_y[prev_size-2];
+						ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
+						
+						ptsx.push_back(ref_x_prev);
+						ptsx.push_back(ref_x);
+
+						ptsy.push_back(ref_y_prev);
+						ptsy.push_back(ref_y);
+					}
+
+					// Get waypoints 30, 60, 90 meters ahead
+					vector<double>next_wp0 = getXY(car_s+30, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+					vector<double>next_wp1 = getXY(car_s+60, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+					vector<double>next_wp2 = getXY(car_s+90, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+					
+					ptsx.push_back(next_wp0[0]);
+					ptsx.push_back(next_wp1[0]);
+					ptsx.push_back(next_wp2[0]);
+
+					ptsy.push_back(next_wp0[1]);
+					ptsy.push_back(next_wp1[1]);
+					ptsy.push_back(next_wp2[1]);
+
+					// Convert from global coordinates to car coordinates
+					for(int i = 0; i < ptsx.size(); i++) {
+						double shift_x = ptsx[i]-ref_x;
+						double shift_y = ptsy[i]-ref_y;
+
+						ptsx[i] = (shift_x * cos(0-ref_yaw) - shift_y * sin(0-ref_yaw));
+						ptsy[i] = (shift_x * sin(0-ref_yaw) + shift_y * cos(0-ref_yaw));
+					}
+
+					tk::spline s;
+
+					// Calculate the spline
+					s.set_points(ptsx, ptsy);
+
+					vector<double> next_x_vals;
+					vector<double> next_y_vals;
+
+					// Add previous values
+					for(int i = 0; i < previous_path_x.size(); i++) {
+						next_x_vals.push_back(previous_path_x[i]);
+						next_y_vals.push_back(previous_path_y[i]);
+					}
+
+					// x, y (from spline), and distance
+					double target_x = 30.0;
+					double target_y = s(target_x);
+					double target_dist = sqrt(target_x*target_x+target_y*target_y);
+
+					// If the speed is not near speed limit and it's not too close to car in front, increase the interval
+					if(car_speed < 44.0 && tooClose == false) {
+						interval += 0.0009;
+					}
+
+					// If tooClose is true, subtract from the interval to slow down
+					if(tooClose) {
+						interval -= 0.0009;
+					}
+
+					// If emergencyBrakes is true, slow down fast
+					if(emergencyBrakes) {
+						interval -= 0.001;
+					}
+
+					// If car speed is too slow, accelerate to maintain speed
+					if(car_speed <= 20.0) {
+						interval += 0.001;
+					}
+
+					// X position at interval
+					double x_pos = 0;
+
+					// Number of points
+					double N = target_dist/interval;
+
+					for(int i = 1; i <= 50-previous_path_x.size(); i++) {
+						// Current x position plus interval (30/(num of points))
+						double x_point = x_pos+target_x/N;
+						double y_point = s(x_point);
+
+						x_pos = x_point;
+
+						// Convert back to global coordinates
+						double x_ref = x_point;
+						double y_ref = y_point;
+
+						x_point = (x_ref*cos(ref_yaw) - y_ref*sin(ref_yaw));
+						y_point = (x_ref*sin(ref_yaw) + y_ref*cos(ref_yaw));
+
+						x_point += ref_x;
+						y_point += ref_y;
+
+						next_x_vals.push_back(x_point);
+						next_y_vals.push_back(y_point);
+					}
+
+					// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+					msgJson["next_x"] = next_x_vals;
+					msgJson["next_y"] = next_y_vals;
+
+					auto msg = "42[\"control\","+ msgJson.dump()+"]";
+
+					//this_thread::sleep_for(chrono::milliseconds(1000));
+					ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {
         // Manual driving
