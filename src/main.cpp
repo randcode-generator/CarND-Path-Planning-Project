@@ -259,8 +259,13 @@ int main() {
 					bool laneChangable_left = false;
 					// Is right lane changable
 					bool laneChangable_right = false;
-					
-					std::tie(tooCloseCount, tooClose, emergencyBrakes, laneChangable_left, laneChangable_right) = sm.process_sensors(sensor_fusion.begin(), sensor_fusion.end());
+
+					sensor_sig s_signals = sm.process_sensors(sensor_fusion.begin(), sensor_fusion.end());
+					tooCloseCount = s_signals.tooCloseCount;
+					tooClose = s_signals.tooClose;
+					emergencyBrakes = s_signals.emergencyBrakes;
+					laneChangable_left = s_signals.laneChangable_left;
+					laneChangable_right = s_signals.laneChangable_right;
 
 					// If there's a car in front that's slow and speed is less then 31mph get car to change lanes
 					if(tooCloseCount > 100 && car_speed <= 31) {

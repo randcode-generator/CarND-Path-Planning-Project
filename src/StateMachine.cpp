@@ -4,6 +4,8 @@
 
 using namespace std;
 
+sensor_sig sensor_signals;
+
 void StateMachine::setCarInfo(int current_lane, double car_x, double car_y, double car_s, double car_d) {
   this->current_lane = current_lane;
   this->car_x = car_x;
@@ -30,7 +32,7 @@ bool StateMachine::isLaneChangable(bool &laneChangable, int lane, double x, doub
   return isCarInFront;
 }
 
-std::tuple<int, bool, bool, bool, bool> StateMachine::process_sensors(json::iterator begin, json::iterator end) {
+sensor_sig StateMachine::process_sensors(json::iterator begin, json::iterator end) {
   bool tooClose = false;
   bool emergencyBrakes = false;
   bool laneChangable_right = true;
@@ -93,5 +95,11 @@ std::tuple<int, bool, bool, bool, bool> StateMachine::process_sensors(json::iter
       laneChangedCount = 0;
     }
   }
-  return {tooCloseCount, tooClose, emergencyBrakes, laneChangable_left, laneChangable_right};
+  sensor_signals.tooCloseCount = tooCloseCount;
+  sensor_signals.tooClose = tooClose;
+  sensor_signals.emergencyBrakes = emergencyBrakes;
+  sensor_signals.laneChangable_left = laneChangable_left;
+  sensor_signals.laneChangable_right = laneChangable_right;
+
+  return sensor_signals;
 }
